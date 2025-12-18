@@ -1,11 +1,10 @@
 [Unit]
-Description=Service to execute file.sh
+Description=Service to execute exe.sh
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root
-ExecStart=./exe.sh
+ExecStart=/root/exe.sh
 Restart=on-failure
 
 [Install]
