@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/file.sh
+ExecStart=exe.sh
 Restart=on-failure
 
 [Install]
