@@ -5,7 +5,8 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/root/exe.sh
-Restart=on-failure
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
