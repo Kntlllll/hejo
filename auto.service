@@ -1,16 +1,11 @@
 [Unit]
-Description=Service untuk menjalankan exe.sh
+Description=Service to execute file.sh
 After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root
-ExecStart=/root/exe.sh
+ExecStart=/path/to/file.sh
 Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
