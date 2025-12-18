@@ -18,7 +18,39 @@ API_URL="https://cybervpn.my.id/tembak/configuration/smartfren/api-multibuy?acti
 REQUEST_DELAY=5
 MAX_RETRIES=2
 BATCH_SIZE=100
-MAX_REQUESTS_PER_MINUTE=12  # Rate limiting: 12 requests/minute = 5 detik delay
+
+# User dan permission yang diinginkan
+FILE_OWNER="www-data"
+FILE_PERMISSIONS="777"
+
+# Fungsi untuk mengatur permission file
+ensure_permissions() {
+    local file="$1"
+    
+    # Cek jika file ada
+    if [ -f "$file" ]; then
+        # Set owner ke www-data
+        if ! sudo chown "$FILE_OWNER:$FILE_OWNER" "$file" 2>/dev/null; then
+            chown "$FILE_OWNER:$FILE_OWNER" "$file" 2>/dev/null || true
+        fi
+        
+        # Set permission ke 777
+        if ! sudo chmod "$FILE_PERMISSIONS" "$file" 2>/dev/null; then
+            chmod "$FILE_PERMISSIONS" "$file" 2>/dev/null || true
+        fi
+        
+        return 0
+    elif [ -d "$file" ]; then
+        # Jika itu direktori
+        if ! sudo chown -R "$FILE_OWNER:$FILE_OWNER" "$file" 2>/dev/null; then
+            chown -R "$FILE_OWNER:$FILE_OWNER" "$file" 2>/dev/null || true
+        fi
+        
+        if ! sudo chmod -R "$FILE_PERMISSIONS" "$file" 2>/dev/null; then
+            chmod -R "$FILE_PERMISSIONS" "$file" 2>/dev/null || true
+        fi
+    fi
+}
 
 # Fungsi untuk log dengan log level
 log() {
@@ -35,18 +67,25 @@ log() {
     fi
     
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] ${message}" | tee -a "$LOG_FILE"
+    # Pastikan log file punya permission yang benar
+    ensure_permissions "$LOG_FILE"
 }
 
-# Fungsi untuk inisialisasi file JSON
+# Fungsi untuk inisialisasi file JSON dengan permission management
 init_json_file() {
     local file="$1"
     
     if [ ! -f "$file" ]; then
         echo "[]" > "$file"
+        ensure_permissions "$file"
         log "File $file dibuat dengan struktur JSON kosong"
     elif [ ! -s "$file" ]; then
         echo "[]" > "$file"
+        ensure_permissions "$file"
         log "File $file diinisialisasi ulang karena kosong"
+    else
+        # Pastikan permission file yang sudah ada
+        ensure_permissions "$file"
     fi
 }
 
@@ -58,11 +97,14 @@ validate_json_file() {
         if ! jq empty "$file" 2>/dev/null; then
             log "ERROR: File $file bukan JSON valid. Membuat yang baru..."
             echo "[]" > "$file"
+            ensure_permissions "$file"
             return 1
         fi
+        ensure_permissions "$file"
         return 0
     else
         echo "[]" > "$file"
+        ensure_permissions "$file"
         return 0
     fi
 }
@@ -77,9 +119,11 @@ deduplicate_and_validate() {
     # Step 1: Filter data dengan msisdn null atau kosong
     jq '[.[] | select(.msisdn != null and .msisdn != "" and .msisdn != "null")]' \
         "$INPUT_FILE" > "${INPUT_FILE}.tmp1"
+    ensure_permissions "${INPUT_FILE}.tmp1"
     
     # Step 2: Hapus duplikat dalam file input itu sendiri
     jq 'group_by(.msisdn) | map(.[0])' "${INPUT_FILE}.tmp1" > "${INPUT_FILE}.tmp2"
+    ensure_permissions "${INPUT_FILE}.tmp2"
     
     # Step 3: Filter out numbers already in success.json
     if [ -f "$SUCCESS_FILE" ] && [ -s "$SUCCESS_FILE" ]; then
@@ -90,13 +134,9 @@ deduplicate_and_validate() {
                 ($success[0] | any(.msisdn? == $m) | not)
             )]
         ' "${INPUT_FILE}.tmp2" > "${INPUT_FILE}.tmp3"
+        ensure_permissions "${INPUT_FILE}.tmp3"
         mv "${INPUT_FILE}.tmp3" "${INPUT_FILE}.tmp2"
-    fi
-    
-    # Step 4: Filter out numbers already in failed.json (opsional)
-    if [ -f "$FAILED_FILE" ] && [ -s "$FAILED_FILE" ]; then
-        log "Filtering numbers in failed.json (akan di-retry nanti)..."
-        # Tetap simpan di failed.json untuk retry logic terpisah
+        ensure_permissions "${INPUT_FILE}.tmp2"
     fi
     
     # Hitung perubahan
@@ -109,6 +149,7 @@ deduplicate_and_validate() {
     
     # Update file asli
     mv "${INPUT_FILE}.tmp2" "$INPUT_FILE"
+    ensure_permissions "$INPUT_FILE"
     rm -f "${INPUT_FILE}.tmp1" 2>/dev/null
     
     log "Jumlah data setelah deduplikasi: $new_count"
@@ -134,6 +175,7 @@ rate_limit() {
     fi
     
     echo "$current_time" > "$last_request_file"
+    ensure_permissions "$last_request_file"
 }
 
 # Fungsi untuk eksekusi curl dengan retry
@@ -194,6 +236,7 @@ execute_curl() {
                 # Simpan ke file sukses
                 if [ ! -f "$SUCCESS_FILE" ]; then
                     echo "[]" > "$SUCCESS_FILE"
+                    ensure_permissions "$SUCCESS_FILE"
                 fi
                 
                 # Tambahkan original msisdn ke response
@@ -203,6 +246,7 @@ execute_curl() {
                 jq --argjson new "$enhanced_response" '. += [$new]' "$SUCCESS_FILE" > "${SUCCESS_FILE}.tmp" && \
                     mv "${SUCCESS_FILE}.tmp" "$SUCCESS_FILE"
                 
+                ensure_permissions "$SUCCESS_FILE"
                 log "Data sukses disimpan ke $SUCCESS_FILE"
             else
                 log "WARNING: Response bukan JSON valid untuk $msisdn"
@@ -253,6 +297,7 @@ save_failed() {
     # Tambahkan ke failed.json
     if [ ! -f "$FAILED_FILE" ]; then
         echo "[]" > "$FAILED_FILE"
+        ensure_permissions "$FAILED_FILE"
     fi
     
     # Cek apakah sudah ada di failed.json
@@ -275,6 +320,7 @@ save_failed() {
            }]' "$FAILED_FILE" > "${FAILED_FILE}.tmp" && \
         mv "${FAILED_FILE}.tmp" "$FAILED_FILE"
         
+        ensure_permissions "$FAILED_FILE"
         log "Data gagal disimpan ke $FAILED_FILE"
     else
         log "WARNING: $msisdn sudah ada di failed.json, tidak disimpan duplikat"
@@ -304,6 +350,7 @@ process_numbers() {
     
     # Buat file processing
     cp "$input_file" "$PROCESSING_FILE"
+    ensure_permissions "$PROCESSING_FILE"
     
     processed_count=0
     success_count=0
@@ -321,6 +368,7 @@ process_numbers() {
             # Hapus element pertama
             jq '.[1:]' "$PROCESSING_FILE" > "${PROCESSING_FILE}.new" && \
                 mv "${PROCESSING_FILE}.new" "$PROCESSING_FILE"
+            ensure_permissions "$PROCESSING_FILE"
             continue
         fi
         
@@ -341,6 +389,7 @@ process_numbers() {
         # Hapus dari processing file (sudah diproses, sukses atau gagal)
         jq '.[1:]' "$PROCESSING_FILE" > "${PROCESSING_FILE}.new" && \
             mv "${PROCESSING_FILE}.new" "$PROCESSING_FILE"
+        ensure_permissions "$PROCESSING_FILE"
         
         # Backup berkala setiap BATCH_SIZE request
         if [ $((processed_count % BATCH_SIZE)) -eq 0 ] && [ "$processing_mode" = "normal" ]; then
@@ -361,19 +410,19 @@ process_numbers() {
                     timestamp: "'"$(date '+%Y-%m-%d %H:%M:%S')"'"
                 }' > "$backup_file"
             
+            ensure_permissions "$backup_file"
             log "Backup state dibuat: $backup_file"
             
             # Hapus backup lama (simpan hanya 3 terakhir)
             ls -t ${WORK_DIR}/backup_state_*.json 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null
         fi
-        
-        # Delay untuk rate limiting sudah di handle di execute_curl
     done
     
     # Update file asli
     if [ "$processing_mode" = "normal" ]; then
         # Kosongkan file input karena semua sudah diproses
         echo "[]" > "$input_file"
+        ensure_permissions "$input_file"
     fi
     
     # Cleanup
@@ -395,6 +444,7 @@ retry_failed_numbers() {
     
     # Filter hanya yang retry_count < MAX_RETRIES
     jq '[.[] | select(.retry_count < '"$MAX_RETRIES"')]' "$FAILED_FILE" > "${FAILED_FILE}.retry_candidates"
+    ensure_permissions "${FAILED_FILE}.retry_candidates"
     
     local retry_candidates_count=$(jq 'length' "${FAILED_FILE}.retry_candidates")
     
@@ -409,6 +459,7 @@ retry_failed_numbers() {
     # Ekstrak hanya msisdn dan nama_paket untuk retry
     jq '[.[] | {msisdn: .msisdn, nama_paket: .nama_paket}]' \
         "${FAILED_FILE}.retry_candidates" > "${WORK_DIR}/retry_batch.json"
+    ensure_permissions "${WORK_DIR}/retry_batch.json"
     
     # Proses retry
     process_numbers "${WORK_DIR}/retry_batch.json" "retry"
@@ -432,6 +483,7 @@ retry_failed_numbers() {
             ' "$FAILED_FILE" > "${FAILED_FILE}.updated"
             
             mv "${FAILED_FILE}.updated" "$FAILED_FILE"
+            ensure_permissions "$FAILED_FILE"
         else
             log "SEMUA RETRY BERHASIL!"
             # Hapus yang berhasil dari failed.json
@@ -443,6 +495,7 @@ retry_failed_numbers() {
             ' "$FAILED_FILE" > "${FAILED_FILE}.updated"
             
             mv "${FAILED_FILE}.updated" "$FAILED_FILE"
+            ensure_permissions "$FAILED_FILE"
         fi
         
         rm -f "${WORK_DIR}/retry_batch.json"
@@ -450,6 +503,7 @@ retry_failed_numbers() {
         log "Semua retry berhasil atau tidak ada data retry"
         # Kosongkan failed.json karena semua berhasil
         echo "[]" > "$FAILED_FILE"
+        ensure_permissions "$FAILED_FILE"
     fi
     
     # Cleanup
@@ -497,6 +551,7 @@ validate_completion() {
                 # Hapus dari input
                 jq '.[1:]' "$INPUT_FILE" > "${INPUT_FILE}.tmp" && \
                     mv "${INPUT_FILE}.tmp" "$INPUT_FILE"
+                ensure_permissions "$INPUT_FILE"
                 
                 # Extra delay untuk emergency processing
                 sleep "$emergency_delay"
@@ -507,6 +562,11 @@ validate_completion() {
     else
         log "SUCCESS: Semua data berhasil diproses (100% complete)"
     fi
+    
+    # Pastikan semua file punya permission yang benar
+    ensure_permissions "$INPUT_FILE"
+    ensure_permissions "$SUCCESS_FILE"
+    ensure_permissions "$FAILED_FILE"
     
     log "=== VALIDASI SELESAI ==="
 }
@@ -537,6 +597,9 @@ main() {
         exit 1
     fi
     
+    # Pastikan working directory punya permission yang benar
+    ensure_permissions "$WORK_DIR"
+    
     # Cek file input
     if [ ! -f "$INPUT_FILE" ]; then
         echo "ERROR: File $INPUT_FILE tidak ditemukan di $WORK_DIR"
@@ -564,7 +627,10 @@ main() {
     echo "Delay antar request: ${REQUEST_DELAY} detik" >> "$LOG_FILE"
     echo "Max retries: $MAX_RETRIES" >> "$LOG_FILE"
     echo "Batch size: $BATCH_SIZE" >> "$LOG_FILE"
+    echo "File Owner: $FILE_OWNER" >> "$LOG_FILE"
+    echo "File Permissions: $FILE_PERMISSIONS" >> "$LOG_FILE"
     echo "==========================================" >> "$LOG_FILE"
+    ensure_permissions "$LOG_FILE"
     
     # Simpan count awal
     original_count=$(jq 'length' "$INPUT_FILE")
@@ -574,6 +640,7 @@ main() {
     if [ "$original_count" -eq 0 ]; then
         log "Tidak ada data untuk diproses"
         echo "[]" > "$INPUT_FILE"
+        ensure_permissions "$INPUT_FILE"
         exit 0
     fi
     
@@ -604,6 +671,13 @@ main() {
     log "Sisa di input: $(jq 'length' "$INPUT_FILE")"
     log "=== EKSEKUSI SELESAI ==="
     
+    # Final permission check
+    log "Final permission check..."
+    ensure_permissions "$INPUT_FILE"
+    ensure_permissions "$SUCCESS_FILE"
+    ensure_permissions "$FAILED_FILE"
+    ensure_permissions "$LOG_FILE"
+    
     echo ""
     echo "========================================"
     echo "EKSEKUSI SELESAI!"
@@ -613,6 +687,8 @@ main() {
     echo "Data sukses     : $SUCCESS_FILE ($(jq 'length' "$SUCCESS_FILE") entries)"
     echo "Data gagal      : $FAILED_FILE ($(jq 'length' "$FAILED_FILE") entries)"
     echo "Data tersisa    : $INPUT_FILE ($(jq 'length' "$INPUT_FILE") entries)"
+    echo "File Owner      : $(stat -c '%U:%G' "$INPUT_FILE" 2>/dev/null || echo "unknown")"
+    echo "File Permissions: $(stat -c '%a' "$INPUT_FILE" 2>/dev/null || echo "unknown")"
     echo "========================================"
 }
 
@@ -624,16 +700,25 @@ cleanup() {
     if [ -f "$PROCESSING_FILE" ] && [ -s "$PROCESSING_FILE" ]; then
         recovery_file="${WORK_DIR}/recovery_$(date +%Y%m%d_%H%M%S).json"
         cp "$PROCESSING_FILE" "$recovery_file"
+        ensure_permissions "$recovery_file"
         log "Recovery file dibuat: $recovery_file"
         
         # Gabungkan kembali ke input file
         if [ -f "$INPUT_FILE" ]; then
             jq -s '.[0] + .[1]' "$INPUT_FILE" "$PROCESSING_FILE" > "${INPUT_FILE}.recovered"
             mv "${INPUT_FILE}.recovered" "$INPUT_FILE"
+            ensure_permissions "$INPUT_FILE"
         else
             cp "$PROCESSING_FILE" "$INPUT_FILE"
+            ensure_permissions "$INPUT_FILE"
         fi
     fi
+    
+    # Pastikan semua file punya permission yang benar sebelum exit
+    ensure_permissions "$INPUT_FILE"
+    ensure_permissions "$SUCCESS_FILE"
+    ensure_permissions "$FAILED_FILE"
+    ensure_permissions "$LOG_FILE"
     
     # Cleanup temporary files
     rm -f "$PROCESSING_FILE" "${PROCESSING_FILE}.new" 2>/dev/null
